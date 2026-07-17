@@ -1,0 +1,35 @@
+# ─── Python Bytecode ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# ─── Virtual Environment ────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ─── Django ─────────────────────────────────────────────────────────────────────
+*.log
+local_settings.py
+db.sqlite3          # Local dev database — regenerate with: python manage.py migrate
+media/
+
+# ─── Environment & Secrets ──────────────────────────────────────────────────────
+.env                # Contains SECRET_KEY and credentials — never commit this!
+.env.*
+
+# ─── Distribution / Build ───────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# ─── IDE / Editor ───────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

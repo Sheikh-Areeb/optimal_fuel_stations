@@ -89,7 +89,7 @@ class FuelRouterServiceTests(TestCase):
             [-87.5, 41.5],
             [-87.0, 41.0]
         ]
-        stations = find_stations_along_path(route, max_distance_miles=10.0)
+        stations = find_stations_along_path(route, initial_radius_miles=10.0, max_radius_miles=10.0)
         
         # The far station D should be excluded.
         # Stations A, B, and C should be matched, but since B and C are duplicates of A (A and B have identical coords, 

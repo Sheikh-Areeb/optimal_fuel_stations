@@ -2,6 +2,7 @@ import csv
 import time
 import requests
 import re
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from fuel_router.models import Truckstop
 
@@ -145,8 +146,10 @@ class Command(BaseCommand):
 
     def geocode_nominatim(self, query):
         """Fallback OpenStreetMap Nominatim Geocoder"""
-        url = "https://nominatim.openstreetmap.org/search"
-        headers = {'User-Agent': 'FuelRoutingApp/1.0'}
+        base_url = getattr(settings, 'NOMINATIM_BASE_URL', 'https://nominatim.openstreetmap.org')
+        user_agent = getattr(settings, 'NOMINATIM_USER_AGENT', 'FuelRoutingApp/1.0')
+        url = f"{base_url}/search"
+        headers = {'User-Agent': user_agent}
         params = {'q': query, 'format': 'json', 'limit': 1}
         try:
             r = requests.get(url, headers=headers, params=params, timeout=5)

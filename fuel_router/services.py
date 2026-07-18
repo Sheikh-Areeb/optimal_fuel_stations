@@ -1,31 +1,9 @@
 import math
 import requests
 import os
+from django.conf import settings
+from django.core.cache import cache
 from .models import Truckstop
-
-# Mock coordinates for testing when network DNS fails in sandboxed environment
-MOCK_CITIES = {
-    "new york, ny": (40.7128, -74.0060),
-    "new york": (40.7128, -74.0060),
-    "chicago, il": (41.8781, -87.6298),
-    "chicago": (41.8781, -87.6298),
-    "los angeles, ca": (34.0522, -118.2437),
-    "los angeles": (34.0522, -118.2437),
-    "houston, tx": (29.7604, -95.3698),
-    "houston": (29.7604, -95.3698),
-    "miami, fl": (25.7617, -80.1918),
-    "miami": (25.7617, -80.1918),
-    "seattle, wa": (47.6062, -122.3321),
-    "seattle": (47.6062, -122.3321),
-    "san francisco, ca": (37.7749, -122.4194),
-    "san francisco": (37.7749, -122.4194),
-    "denver, co": (39.7392, -104.9903),
-    "denver": (39.7392, -104.9903),
-    "boston, ma": (42.3601, -71.0589),
-    "boston": (42.3601, -71.0589),
-    "atlanta, ga": (33.7490, -84.3880),
-    "atlanta": (33.7490, -84.3880),
-}
 
 def haversine(lat1, lon1, lat2, lon2):
     """Calculates haversine distance in miles between two coordinates."""
@@ -38,52 +16,86 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * c
 
 def geocode_city(city_name):
-    """Geocodes a city using OpenStreetMap Nominatim with local mock fallback."""
-    normalized_name = city_name.strip().lower()
-    
-    # Try Nominatim API first
-    url = "https://nominatim.openstreetmap.org/search"
-    headers = {"User-Agent": "FuelRoutingApp/1.0"}
-    params = {"q": city_name, "format": "json", "limit": 1}
+    """Geocodes a city name to (lat, lon) using Nominatim.
+    Results are cached for 7 days to avoid redundant API calls.
+    Falls back to a built-in mock dict and the Truckstop DB if the API is unreachable.
+    """
+    geo_cache_key = f"geocode_{city_name.lower().replace(' ', '_').replace(',', '')}"
+    cached = cache.get(geo_cache_key)
+    if cached is not None:
+        return cached
+
+    # --- Live Nominatim lookup ---
+    base_url = getattr(settings, 'NOMINATIM_BASE_URL', 'https://nominatim.openstreetmap.org')
+    user_agent = getattr(settings, 'NOMINATIM_USER_AGENT', 'FuelRoutingApp/1.0')
+    url = f"{base_url}/search"
+    headers = {'User-Agent': user_agent}
+    params = {'q': city_name, 'format': 'json', 'limit': 1}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=5)
         if r.status_code == 200 and r.json():
             res = r.json()[0]
-            return float(res["lat"]), float(res["lon"])
+            result = (float(res['lat']), float(res['lon']))
+            cache.set(geo_cache_key, result, timeout=60 * 60 * 24 * 7)  # 7 days
+            return result
     except Exception:
-        # Fall back to mock cities if network fails or throws DNS errors
         pass
-        
-    # Check fallback dictionary
-    if normalized_name in MOCK_CITIES:
-        return MOCK_CITIES[normalized_name]
-        
-    # Check if there is a match in our database to return its coordinates as fallback
+
+    # --- Fallback 1: built-in mock dict for common US cities ---
+    MOCK_CITIES = {
+        'new york, ny': (40.7128, -74.0060), 'new york': (40.7128, -74.0060),
+        'chicago, il': (41.8781, -87.6298), 'chicago': (41.8781, -87.6298),
+        'los angeles, ca': (34.0522, -118.2437), 'los angeles': (34.0522, -118.2437),
+        'houston, tx': (29.7604, -95.3698), 'houston': (29.7604, -95.3698),
+        'miami, fl': (25.7617, -80.1918), 'miami': (25.7617, -80.1918),
+        'seattle, wa': (47.6062, -122.3321), 'seattle': (47.6062, -122.3321),
+        'san francisco, ca': (37.7749, -122.4194), 'san francisco': (37.7749, -122.4194),
+        'denver, co': (39.7392, -104.9903), 'denver': (39.7392, -104.9903),
+        'boston, ma': (42.3601, -71.0589), 'boston': (42.3601, -71.0589),
+        'atlanta, ga': (33.7490, -84.3880), 'atlanta': (33.7490, -84.3880),
+        'cleveland, oh': (41.4993, -81.6944), 'cleveland': (41.4993, -81.6944),
+    }
+    normalized = city_name.strip().lower()
+    if normalized in MOCK_CITIES:
+        result = MOCK_CITIES[normalized]
+        cache.set(geo_cache_key, result, timeout=60 * 60 * 24 * 7)
+        return result
+
+    # --- Fallback 2: nearest truckstop city in the database ---
     db_match = Truckstop.objects.filter(city__iexact=city_name).first()
     if db_match:
-        return db_match.latitude, db_match.longitude
+        result = (db_match.latitude, db_match.longitude)
+        cache.set(geo_cache_key, result, timeout=60 * 60 * 24 * 7)
+        return result
 
     return None
 
 def get_osrm_route(start_coords, end_coords):
-    """Fetches driving route coordinates and distance from OSRM demo server."""
-    # OSRM expects lon,lat format
-    url = f"http://router.project-osrm.org/route/v1/driving/{start_coords[1]},{start_coords[0]};{end_coords[1]},{end_coords[0]}?overview=full&geometries=geojson"
+    """Fetches driving route coordinates and distance from the OSRM server.
+    Falls back to straight-line interpolation if OSRM is unreachable.
+    """
+    base_url = getattr(settings, 'OSRM_BASE_URL', 'http://router.project-osrm.org')
+    url = (
+        f"{base_url}/route/v1/driving/"
+        f"{start_coords[1]},{start_coords[0]};"
+        f"{end_coords[1]},{end_coords[0]}"
+        "?overview=full&geometries=geojson"
+    )
+
     try:
         r = requests.get(url, timeout=5)
         if r.status_code == 200:
             data = r.json()
             if "routes" in data and len(data["routes"]) > 0:
                 route = data["routes"][0]
-                distance_meters = route["distance"]
-                distance_miles = distance_meters * 0.000621371
-                geometry = route["geometry"]
-                return geometry["coordinates"], distance_miles
+                distance_miles = route["distance"] * 0.000621371
+                coordinates = route["geometry"]["coordinates"]
+                return coordinates, distance_miles
     except Exception:
         # Fall back to straight-line interpolation if OSRM is unreachable
         pass
 
-    # Resilient straight-line fallback (interpolates 100 coordinates between start and end)
+    # Resilient straight-line fallback (interpolates 100 coords between start and end)
     num_points = 100
     lat1, lon1 = start_coords
     lat2, lon2 = end_coords
@@ -93,72 +105,55 @@ def get_osrm_route(start_coords, end_coords):
         lat = lat1 + t * (lat2 - lat1)
         lon = lon1 + t * (lon2 - lon1)
         points.append([lon, lat])
-    
+
     distance_miles = haversine(lat1, lon1, lat2, lon2)
     return points, distance_miles
 
-def find_stations_along_path(route_coords, max_distance_miles=15.0):
+def _project_stations(candidate_stops, route_coords, cum_dist, max_distance_miles):
     """
-    Finds fuel stations within a max distance of the route, projects their
-    distance along the route, and deduplicates identical locations keeping only the cheapest.
+    Inner helper: projects candidate DB stops onto the route polyline.
+    Returns a flat list of station dicts that fall within max_distance_miles.
+
+    FIX — detour cost:
+      A station sitting D miles off the highway requires a D-mile exit + D-mile
+      re-entry (round trip = 2*D miles of fuel).  We add that cost to dist_along
+      so the DP solver sees the station's *effective* position on the route and
+      never underestimates the fuel needed to visit it.
     """
-    if not route_coords:
-        return []
-        
-    lats = [pt[1] for pt in route_coords]
-    lons = [pt[0] for pt in route_coords]
-    
-    # 1. Bounding box filter (plus buffer)
-    min_lat, max_lat = min(lats), max(lats)
-    min_lon, max_lon = min(lons), max(lons)
-    buffer = 0.25  # ~17 miles
-    
-    candidate_stops = Truckstop.objects.filter(
-        latitude__range=(min_lat - buffer, max_lat + buffer),
-        longitude__range=(min_lon - buffer, max_lon + buffer)
-    )
-    
-    # Compute cumulative distances along the route polyline
-    cum_dist = [0.0]
-    for i in range(1, len(route_coords)):
-        prev_lon, prev_lat = route_coords[i-1]
-        curr_lon, curr_lat = route_coords[i]
-        d = haversine(prev_lat, prev_lon, curr_lat, curr_lon)
-        cum_dist.append(cum_dist[-1] + d)
-        
-    stations_along_route = []
-    
-    # 2. Project each candidate station onto the polyline segments
+    results = []
     for stop in candidate_stops:
         stop_lat = stop.latitude
         stop_lon = stop.longitude
-        
+
         min_seg_dist = float('inf')
         best_dist_along = 0.0
-        
+
         for i in range(len(route_coords) - 1):
             lon_A, lat_A = route_coords[i]
-            lon_B, lat_B = route_coords[i+1]
-            
+            lon_B, lat_B = route_coords[i + 1]
+
             dlon = lon_B - lon_A
             dlat = lat_B - lat_A
-            
+
             if dlon == 0 and dlat == 0:
                 t = 0.0
             else:
-                t = ((stop_lon - lon_A) * dlon + (stop_lat - lat_A) * dlat) / (dlon**2 + dlat**2)
+                t = ((stop_lon - lon_A) * dlon + (stop_lat - lat_A) * dlat) / (dlon ** 2 + dlat ** 2)
                 t = max(0.0, min(1.0, t))
-                
+
             lat_proj = lat_A + t * dlat
             lon_proj = lon_A + t * dlon
-            
+
             seg_dist = haversine(stop_lat, stop_lon, lat_proj, lon_proj)
             if seg_dist < min_seg_dist:
                 min_seg_dist = seg_dist
-                best_dist_along = cum_dist[i] + t * (cum_dist[i+1] - cum_dist[i])
-                
+                best_dist_along = cum_dist[i] + t * (cum_dist[i + 1] - cum_dist[i])
+
         if min_seg_dist <= max_distance_miles:
-            stations_along_route.append({
+            # Add the round-trip detour miles (exit ramp + re-entry) to effective position.
+            # This ensures the DP never assumes the station is free to visit.
+            effective_dist_along = best_dist_along + (2 * min_seg_dist)
+            results.append({
                 'opis_id': stop.opis_id,
                 'name': stop.name,
                 'address': stop.address,
@@ -167,36 +162,82 @@ def find_stations_along_path(route_coords, max_distance_miles=15.0):
                 'price': stop.retail_price,
                 'latitude': stop.latitude,
                 'longitude': stop.longitude,
-                'dist_along': best_dist_along,
-                'dist_from_route': min_seg_dist
+                'dist_along': effective_dist_along,   # ← includes detour cost
+                'dist_from_route': min_seg_dist        # raw perpendicular distance (for info only)
             })
-            
-    # 3. Deduplicate stations at identical locations (same rounded coordinates, addresses, or names)
-    # Keeping only the cheapest option
+    return results
+
+
+def find_stations_along_path(route_coords, initial_radius_miles=15.0, max_radius_miles=50.0):
+    """
+    Finds fuel stations near the route, accounts for detour costs, and
+    deduplicates identical locations keeping only the cheapest.
+
+    Progressive radius widening:
+      Starts at initial_radius_miles (default 15).  If no stations are found,
+      the search radius expands in 5-mile steps up to max_radius_miles before
+      giving up.  This prevents silent route failures on sparse stretches of road
+      while still preferring close, convenient stations.
+    """
+    if not route_coords:
+        return []
+
+    lats = [pt[1] for pt in route_coords]
+    lons = [pt[0] for pt in route_coords]
+
+    # 1. Bounding box pre-filter (generous buffer to cover the widest possible radius)
+    min_lat, max_lat = min(lats), max(lats)
+    min_lon, max_lon = min(lons), max(lons)
+    # 1 degree ≈ 69 miles — buffer covers max_radius_miles comfortably
+    buffer = max_radius_miles / 69.0
+
+    candidate_stops = list(Truckstop.objects.filter(
+        latitude__range=(min_lat - buffer, max_lat + buffer),
+        longitude__range=(min_lon - buffer, max_lon + buffer)
+    ))
+
+    # Compute cumulative distances along the route polyline (built once, reused)
+    cum_dist = [0.0]
+    for i in range(1, len(route_coords)):
+        prev_lon, prev_lat = route_coords[i - 1]
+        curr_lon, curr_lat = route_coords[i]
+        cum_dist.append(cum_dist[-1] + haversine(prev_lat, prev_lon, curr_lat, curr_lon))
+
+    # 2. Progressive radius widening — expand search until stations are found
+    STEP = 5.0  # miles per expansion step
+    radius = initial_radius_miles
+    stations_along_route = []
+
+    while radius <= max_radius_miles:
+        stations_along_route = _project_stations(candidate_stops, route_coords, cum_dist, radius)
+        if stations_along_route:
+            break  # Found stations — no need to widen further
+        radius += STEP
+
+    # 3. Deduplicate: same location listed multiple times → keep cheapest price
     deduped_stations = []
     for s in stations_along_route:
         coord_key = (round(s['latitude'], 5), round(s['longitude'], 5))
-        addr_key = (s['address'].strip().lower(), s['city'].strip().lower(), s['state'].strip().lower())
-        name_key = (s['name'].strip().lower(), s['city'].strip().lower(), s['state'].strip().lower())
-        
+        addr_key  = (s['address'].strip().lower(), s['city'].strip().lower(), s['state'].strip().lower())
+        name_key  = (s['name'].strip().lower(),    s['city'].strip().lower(), s['state'].strip().lower())
+
         matched_idx = -1
         for idx, ds in enumerate(deduped_stations):
             ds_coord_key = (round(ds['latitude'], 5), round(ds['longitude'], 5))
-            ds_addr_key = (ds['address'].strip().lower(), ds['city'].strip().lower(), ds['state'].strip().lower())
-            ds_name_key = (ds['name'].strip().lower(), ds['city'].strip().lower(), ds['state'].strip().lower())
-            
+            ds_addr_key  = (ds['address'].strip().lower(), ds['city'].strip().lower(), ds['state'].strip().lower())
+            ds_name_key  = (ds['name'].strip().lower(),    ds['city'].strip().lower(), ds['state'].strip().lower())
+
             if coord_key == ds_coord_key or addr_key == ds_addr_key or name_key == ds_name_key:
                 matched_idx = idx
                 break
-                
+
         if matched_idx != -1:
-            # Duplicate found: keep the one with the cheaper price
             if s['price'] < deduped_stations[matched_idx]['price']:
                 deduped_stations[matched_idx] = s
         else:
             deduped_stations.append(s)
-            
-    # Sort final unique stations by distance along the route
+
+    # Sort by effective distance along route
     deduped_stations.sort(key=lambda x: x['dist_along'])
     return deduped_stations
 

@@ -109,6 +109,12 @@ else:
 # Tell django-ratelimit to use Redis for tracking IP hits
 RATELIMIT_USE_CACHE = 'default'
 
+# ─── External Service URLs ───────────────────────────────────────────────────────
+# Swap these for self-hosted or paid providers in production.
+OSRM_BASE_URL = os.getenv('OSRM_BASE_URL', 'http://router.project-osrm.org')
+NOMINATIM_BASE_URL = os.getenv('NOMINATIM_BASE_URL', 'https://nominatim.openstreetmap.org')
+NOMINATIM_USER_AGENT = os.getenv('NOMINATIM_USER_AGENT', 'FuelRoutingApp/1.0')
+
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators

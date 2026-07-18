@@ -36,11 +36,15 @@ class RoutePlanView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 3. Generate route via OSRM
-        route_coords, total_dist = get_osrm_route(start_coords, end_coords)
+        # 3. Generate route via OSRM (falls back to straight-line if unreachable)
+        try:
+            route_coords, total_dist = get_osrm_route(start_coords, end_coords)
+        except Exception:
+            route_coords = None
+
         if not route_coords:
             return Response(
-                {"error": "Failed to map a route between these coordinates."}, 
+                {"error": "Failed to map a route between these coordinates."},
                 status=status.HTTP_424_FAILED_DEPENDENCY
             )
 

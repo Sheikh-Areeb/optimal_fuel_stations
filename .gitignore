@@ -13,13 +13,12 @@ ENV/
 # ─── Django ─────────────────────────────────────────────────────────────────────
 *.log
 local_settings.py
-db.sqlite3          # Local dev database — regenerate with: python manage.py migrate
+db.sqlite3         # Local dev database — regenerate with: python manage.py migrate
 fuel_data.csv       # Large dataset — download separately and run: python manage.py import_fuel fuel_data.csv
 media/
 
 # ─── Environment & Secrets ──────────────────────────────────────────────────────
 .env                # Contains SECRET_KEY and credentials — never commit this!
-.env.*
 
 # ─── Distribution / Build ───────────────────────────────────────────────────────
 dist/
